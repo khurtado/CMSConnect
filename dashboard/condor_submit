@@ -10,6 +10,7 @@ import grp
 import tempfile
 import subprocess
 import time
+import dashboard_report
 
 CondorSubmit = '/usr/bin/.condor_submit'
 ProjectFiles = ('~/.osg_default_project',
@@ -127,7 +128,7 @@ class submit(list):
 		for i in xrange(len(self)):
 			k, v = self[i]
 			if key.lower() == k.lower():
-				self[i][k] = (k, value)
+				list.__setitem__(self, i, (k, value))
 				return
 		self.append((key, value))
 
@@ -221,6 +222,11 @@ def main(args):
 	options = []
 	skip = False
 	readcmds = True
+        if os.environ.get('CONDOR_CMS_DASHBOARD')=='False':
+                Dashboard = False
+        else:
+                Dashboard = True
+
 	for arg in args:
 		matched = False
 		if skip:
@@ -238,6 +244,9 @@ def main(args):
 		if arg == '--debug':
 			Debug = True	# wrapper option, do not append to options[]
 			matched = True
+                elif arg == '--disable-dashboard':
+                        Dashboard = False   # wrapper option, do not append to options[]
+                        matched = True
 		if not matched:
 			submitfile = arg
 
@@ -324,11 +333,11 @@ def main(args):
 					else:
 						classads.append(('x509userproxy','/tmp/x509up_u' + str(os.getuid())))
 	except ConfigParser.Error:
-		pass	
+		pass
 	except subprocess.CalledProcessError:
 		print
 		print "Failed to create proxy."
-		print 
+		print
 		return 1
 
 	acctgroup = setacctgroup(user, project)
@@ -339,6 +348,14 @@ def main(args):
 
 	if acctgroup:
 		classads.append(('AccountingGroup', acctgroup))
+
+        # If CMS Dashboard is enabled:
+        # - Register task to monitor.
+        # - Add dashboard parameters to Classads and SHELL environment.
+        # - Preppend dashboard wrapper before executable for the worker node.
+        if Dashboard:
+                cms_reporter = dashboard_report.CMSReporter(submitfile)
+                sub = cms_reporter.cms_dashboard_report(sub, classads, nargs)
 
 	# We could instead do:
 	# for ad, value in classads:
@@ -368,6 +385,8 @@ def main(args):
 		p.stdin.close()
 	except IOError, e:
 		pass
+
+        out = ''
 	while True:
 		data = p.stdout.read()
 		data = data.replace('Submitting job(s)', '')
@@ -376,7 +395,11 @@ def main(args):
 			break
 		sys.stdout.write(data)
 		sys.stdout.flush()
+                out += '{0}\n'.format(data)
 	rc = p.wait()
+        if Dashboard:
+            # Report submitted jobs to CMS dashboard
+            cms_reporter.report_jobs(out)
 	release_submit_lock()
 	if rc < 0:
 		print 'condor_submit received signal', -rc
